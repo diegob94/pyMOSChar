@@ -1,12 +1,7 @@
 #!/usr/bin/env python
 import sys
-# ==================================================
-# EDIT THE FOLLOWING PATH TO POINT TO YOUR DIRECTORY
-# ==================================================
-sys.path.append('/home/ashwith/Development/pyMOSChar')
-# ==================================================
 
-import charMOS
+from charMOS import CharMOS
 import numpy as np
 
 # Specify the name of the MOSFET model. Simple way to do so
@@ -14,8 +9,8 @@ import numpy as np
 # nmos and pmos transistors. Then generate the netlist in
 # ADE. You'll then be able to view the netlist and see what
 # the name of the model is.
-nmos = "CMOSN"
-pmos = "CMOSP"
+nmos = "sky130_fd_pr__nfet_01v8"
+pmos = "sky130_fd_pr__pfet_01v8"
 
 # Specify the MOSFET width in microns.
 width = 1
@@ -43,26 +38,27 @@ mosLengths = np.arange(0.1, 5.1, 0.1)
 # the values below as per your requirements. Ensure
 # that the step values aren't too small. Otherwise
 # your RAM will get used up.
-charMOS.init(
-simulator='ngspice',
-mosLengths=mosLengths,
-modelFiles=("/home/ashwith/Development/pyMOSChar/pdk.mod",),
-modelN=nmos,
-modelP=pmos,
-simOptions="",
-corners=("",),
-subcktPath="",
-datFileName="mosPDK_90_W{0}u.dat".format(width),
-vgsMax=1,
-vgsStep=20e-3,
-vdsMax=1,
-vdsStep=20e-3,
-vsbMax=1,
-vsbStep=20e-3,
-numfing=1,
-temp=300,
-width=width)
+char_mos = CharMOS(
+    simulator='ngspice',
+    mosLengths=mosLengths,
+    modelFiles=("/home/diegob/eda/src/skywater-pdk/libraries/sky130_fd_pr/latest/models/sky130.lib.spice",),
+    modelN=nmos,
+    modelP=pmos,
+    simOptions="",
+    corners=("",),
+    subcktPath="",
+    datFileName="mosPDK_90_W{0}u.dat".format(width),
+    vgsMax=1,
+    vgsStep=20e-3,
+    vdsMax=1,
+    vdsStep=20e-3,
+    vsbMax=1,
+    vsbStep=20e-3,
+    numfing=1,
+    temp=300,
+    width=width
+)
 
 # This function call finally generates the required database.
-charMOS.genDB()
+char_mos.genDB()
 
