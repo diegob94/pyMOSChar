@@ -26,7 +26,7 @@ width = 1
 # step size too small. Fine steps will use a 
 # LOT of RAM can cause the machine to hang!
 #                     start, stop, step
-mosLengths = np.arange(0.1, 5.1, 0.1)
+mosLengths = np.arange(0.15, 100, 5)
 
 ## Example 2 for lenghs
 #mosLengths = np.concatenate(
@@ -41,12 +41,13 @@ mosLengths = np.arange(0.1, 5.1, 0.1)
 char_mos = CharMOS(
     simulator='ngspice',
     mosLengths=mosLengths,
-    modelFiles=("/home/diegob/eda/src/skywater-pdk/libraries/sky130_fd_pr/latest/models/sky130.lib.spice",),
-    modelN=nmos,
-    modelP=pmos,
+    libs={"tt":"/home/diegob/eda/src/skywater-pdk/libraries/sky130_fd_pr/latest/models/sky130.lib.spice"},
+    nmos=nmos,
+    pmos=pmos,
+    nmos_subckt_path = "msky130_fd_pr__nfet_01v8",
+    pmos_subckt_path = "msky130_fd_pr__pfet_01v8",
     simOptions="",
     corners=("",),
-    subcktPath="",
     datFileName="mosPDK_90_W{0}u.dat".format(width),
     vgsMax=1,
     vgsStep=20e-3,
@@ -56,7 +57,8 @@ char_mos = CharMOS(
     vsbStep=20e-3,
     numfing=1,
     temp=300,
-    width=width
+    width=width,
+    scale = 1,
 )
 
 # This function call finally generates the required database.

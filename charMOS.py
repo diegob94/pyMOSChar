@@ -11,14 +11,16 @@ import shlex
 
 class CharMOS:
     def __init__(self,
-                modelFiles  = ("mosfet.mod",),
+                modelFiles  = tuple(),
+                libs        = dict(),
                 mosLengths  = np.arange(1, 10, 1),
                 simulator   = "ngspice",
-                modelN      = "cmosn",
-                modelP      = "cmosp",
+                nmos        = "cmosn",
+                pmos        = "cmosp",
                 simOptions  = "",
                 corners      = ('section=tt',),
-                subcktPath  = "",
+                nmos_subckt_path  = None,
+                pmos_subckt_path  = None,
                 datFileName = "MOS.dat",
                 vgsStep     =  25e-3,
                 vdsStep     =  25e-3,
@@ -29,6 +31,7 @@ class CharMOS:
                 numfing     = 1,
                 temp        = 300,
                 width       = 1,
+                scale       = 1e-6,
             ):
 
         for modelFile in modelFiles:
@@ -46,17 +49,20 @@ class CharMOS:
         self.vsb = vsb
         self.simulator = simulator
         self.mosLengths = mosLengths
-        self.subcktPath = subcktPath
         self.modelFiles = modelFiles
-        self.modelN = modelN
+        self.modelN = nmos
+        self.modelP = pmos
+        self.nmos_subckt_path = nmos_subckt_path
+        self.pmos_subckt_path = pmos_subckt_path
         self.width = width
         self.vgsMax = vgsMax
         self.vgsStep = vgsStep
         self.vdsMax = vdsMax
         self.vdsStep = vdsStep
-        self.modelP = modelP
         self.simOptions = shlex.split(simOptions)
         self.output_dir = Path.cwd()/"work"
+        self.libs = libs
+        self.scale = scale
 
         if (self.simulator == "ngspice"):
             self.netlist_writer = NgspiceNetlistWriter(self)
@@ -116,8 +122,8 @@ class CharMOS:
 
                 if (self.simulator == "ngspice"):
 
-                    self.runSim(netlists["nmos"].name,netlists["nmos"].parent,log_file)
-                    simDat = spice3read.read(netlists["nmos_raw"])
+                    self.runSim(netlists["mos"].name,netlists["mos"].parent,log_file)
+                    simDat = spice3read.read(netlists["mos_raw"])
 
                     self.mosDat['nfet']['id'][idxL][idxVSB]  = simDat['i(id)']
                     self.mosDat['nfet']['vt'][idxL][idxVSB]  = simDat['vt']
@@ -131,20 +137,17 @@ class CharMOS:
                     self.mosDat['nfet']['cdd'][idxL][idxVSB] = simDat['cdd']
                     self.mosDat['nfet']['css'][idxL][idxVSB] = simDat['css']
 
-                    self.runSim(netlists["pmos"].name,netlists["pmos"].parent,log_file)
-                    simDat = spice3read.read(netlists["pmos_raw"])
-
-                    self.mosDat['pfet']['id'][idxL][idxVSB]  = simDat['i(id)']
-                    self.mosDat['pfet']['vt'][idxL][idxVSB]  = simDat['vt']
-                    self.mosDat['pfet']['gm'][idxL][idxVSB]  = simDat['gm']
-                    self.mosDat['pfet']['gmb'][idxL][idxVSB] = simDat['gmb']
-                    self.mosDat['pfet']['gds'][idxL][idxVSB] = simDat['gds']
-                    self.mosDat['pfet']['cgg'][idxL][idxVSB] = simDat['cgg']
-                    self.mosDat['pfet']['cgs'][idxL][idxVSB] = simDat['cgs']
-                    self.mosDat['pfet']['cgd'][idxL][idxVSB] = simDat['cgd']
-                    self.mosDat['pfet']['cgb'][idxL][idxVSB] = simDat['cgb']
-                    self.mosDat['pfet']['cdd'][idxL][idxVSB] = simDat['cdd']
-                    self.mosDat['pfet']['css'][idxL][idxVSB] = simDat['css']
+#                    self.mosDat['pfet']['id'][idxL][idxVSB]  = simDat['i(id)']
+#                    self.mosDat['pfet']['vt'][idxL][idxVSB]  = simDat['vt']
+#                    self.mosDat['pfet']['gm'][idxL][idxVSB]  = simDat['gm']
+#                    self.mosDat['pfet']['gmb'][idxL][idxVSB] = simDat['gmb']
+#                    self.mosDat['pfet']['gds'][idxL][idxVSB] = simDat['gds']
+#                    self.mosDat['pfet']['cgg'][idxL][idxVSB] = simDat['cgg']
+#                    self.mosDat['pfet']['cgs'][idxL][idxVSB] = simDat['cgs']
+#                    self.mosDat['pfet']['cgd'][idxL][idxVSB] = simDat['cgd']
+#                    self.mosDat['pfet']['cgb'][idxL][idxVSB] = simDat['cgb']
+#                    self.mosDat['pfet']['cdd'][idxL][idxVSB] = simDat['cdd']
+#                    self.mosDat['pfet']['css'][idxL][idxVSB] = simDat['css']
 
                 elif (self.simulator == "spectre"):
 
@@ -212,106 +215,73 @@ class NgspiceNetlistWriter(AbstractNetlistWriter):
     def __init__(self, char_mos):
         super().__init__(char_mos)
     def genNetlist(self, L, VSB):
-        netlist_nmos_path = self.output_dir/f'charNMOS_{L}_{VSB}.net'
-        raw_nmos_path = self.output_dir/f"outN_{L}_{VSB}.raw"
-        netlist_pmos_path = self.output_dir/f'charPMOS_{L}_{VSB}.net'
-        raw_pmos_path = self.output_dir/f"outP_{L}_{VSB}.raw"
-        self.genNetlistNMOS(netlist_nmos_path, raw_nmos_path, L, VSB)
-        self.genNetlistPMOS(netlist_pmos_path, raw_pmos_path, L, VSB)
-        return dict(nmos=netlist_nmos_path, pmos=netlist_pmos_path, nmos_raw = raw_nmos_path, pmos_raw = raw_pmos_path)
-    def genNetlistNMOS(self, netlist_path, raw_file, L, VSB):
+        netlist_path = self.output_dir/f'charMOS_{L}_{VSB}.net'
+        raw_path = self.output_dir/f"out_{L}_{VSB}.raw"
+        raw_file = raw_path.name
         with netlist_path.open("w") as netlist:
-            netlist.write("Characterize N Channel MOSFET\n")
+            netlist.write("Characterize MOSFETs\n")
             netlist.write("\n")
             for modelFile in self.char_mos.modelFiles:
-                netlist.write(".include {0}\n".format(modelFile))
+                netlist.write(f".include {modelFile}\n")
+            for lib_name,lib_path in self.char_mos.libs.items():
+                netlist.write(f".lib {lib_path} {lib_name}\n")
             netlist.write(".param length={0}\n".format(L))
             netlist.write(".param mosChar_sb={0}\n".format(VSB))
             netlist.write("\n")
             netlist.write("vds  nDrain 0 dc 0\n")
             netlist.write("vgs  nGate  0 dc 0\n")
-            netlist.write("vbs  nBulk  0 dc {-mosChar_sb}\n")
+            netlist.write("vbs_n  nBulk_n  0 dc {-mosChar_sb}\n")
+            netlist.write("vbs_p  nBulk_p  0 dc mosChar_sb\n")
             netlist.write("\n")
-            netlist.write("mn nDrain nGate 0 nBulk {0}  L={{length*1e-6}} W={{{1}*1e-6}}\n".format(self.char_mos.modelN, self.char_mos.width))
+            mos_vars = [
+                ["mn",self.char_mos.nmos_subckt_path,"nBulk_n",self.char_mos.modelN],
+                ["mp",self.char_mos.pmos_subckt_path,"nBulk_p",self.char_mos.modelP]]
+            mos_vars = [[
+                mos if subckt_path is None else "X" + mos,
+                mos if subckt_path is None else "m.X" + mos + "." + subckt_path,
+                bulk_node,
+                model]
+                    for mos,subckt_path,bulk_node,model in mos_vars]
+            for mos,_,bulk_node,model in mos_vars:
+                netlist.write(f"{mos} nDrain nGate 0 {bulk_node} {model} L={{length*{self.char_mos.scale}}} W={{{self.char_mos.width}*{self.char_mos.scale}}}\n")
             netlist.write("\n")
             netlist.write(".options dccap post brief accurate\n")
             netlist.write(".control\n")
-            netlist.write("save all @mn[id] \n")
-            netlist.write("+ @mn[vth]\n")
-            netlist.write("+ @mn[gm]\n")
-            netlist.write("+ @mn[gmbs] \n")
-            netlist.write("+ @mn[gds] \n")
-            netlist.write("+ @mn[cgg] \n")
-            netlist.write("+ @mn[cgs] \n")
-            netlist.write("+ @mn[cgd] \n")
-            netlist.write("+ @mn[cdd] \n")
-            netlist.write("+ @mn[cbs] \n")
+            netlist.write(f"save all\n")
+            for _,mos_path,_,_ in mos_vars:
+                netlist.write(f"+ @{mos_path}[id] \n")
+                netlist.write(f"+ @{mos_path}[vth]\n")
+                netlist.write(f"+ @{mos_path}[gm]\n")
+                netlist.write(f"+ @{mos_path}[gmbs] \n")
+                netlist.write(f"+ @{mos_path}[gds] \n")
+                netlist.write(f"+ @{mos_path}[cgg] \n")
+                netlist.write(f"+ @{mos_path}[cgs] \n")
+                netlist.write(f"+ @{mos_path}[cgd] \n")
+                netlist.write(f"+ @{mos_path}[cdd] \n")
+                netlist.write(f"+ @{mos_path}[cbs] \n")
             netlist.write("\n")
             netlist.write("dc vgs 0 {0} {1} vds 0 {2} {3}\n".format(self.char_mos.vgsMax, self.char_mos.vgsStep, self.char_mos.vdsMax, self.char_mos.vdsStep))
             netlist.write("\n")
-            netlist.write("let id   = @mn[id]\n")
-            netlist.write("let vt   = @mn[vth]\n")
-            netlist.write("let gm   = @mn[gm]\n")
-            netlist.write("let gmb  = @mn[gmbs]\n")
-            netlist.write("let gds  = @mn[gds]\n")
-            netlist.write("let cgg  = @mn[cgg]\n")
-            netlist.write("let cgs  = -@mn[cgs]\n")
-            netlist.write("let cgd  = -@mn[cgd]\n")
-            netlist.write("let cgb  = @mn[cgg] - (-@mn[cgs])-(-@mn[cgd])\n")
-            netlist.write("let cdd  = @mn[cdd]\n")
-            netlist.write("let css  = -@mn[cgs]-@mn[cbs]\n")
-            netlist.write("\n")
-            netlist.write(f"write {raw_file} id vt gm gmb gds cgg cgs cgd cgb cdd css\n")
+            for mos,mos_path,_,_ in mos_vars:
+                suffix = mos[-1]
+                netlist.write(f"let id_{suffix}   = @{mos_path}[id]\n")
+                netlist.write(f"let vt_{suffix}   = @{mos_path}[vth]\n")
+                netlist.write(f"let gm_{suffix}   = @{mos_path}[gm]\n")
+                netlist.write(f"let gmb_{suffix}  = @{mos_path}[gmbs]\n")
+                netlist.write(f"let gds_{suffix}  = @{mos_path}[gds]\n")
+                netlist.write(f"let cgg_{suffix}  = @{mos_path}[cgg]\n")
+                netlist.write(f"let cgs_{suffix}  = -@{mos_path}[cgs]\n")
+                netlist.write(f"let cgd_{suffix}  = -@{mos_path}[cgd]\n")
+                netlist.write(f"let cgb_{suffix}  = @{mos_path}[cgg] - (-@{mos_path}[cgs])-(-@{mos_path}[cgd])\n")
+                netlist.write(f"let cdd_{suffix}  = @{mos_path}[cdd]\n")
+                netlist.write(f"let css_{suffix}  = -@{mos_path}[cgs]-@{mos_path}[cbs]\n")
+                netlist.write("\n")
+            save_vars = ['id', 'vt', 'gm', 'gmb', 'gds', 'cgg', 'cgs', 'cgd', 'cgb', 'cdd', 'css']
+            netlist.write(f"write {raw_file} {' '.join([i + '_' + s for i in save_vars for s in ['n','p']])}\n")
             netlist.write("exit\n")
             netlist.write(".endc\n")
             netlist.write(".end\n")
-
-    def genNetlistPMOS(self, netlist_path, raw_file, L, VSB):
-        with netlist_path.open("w") as netlist:
-            netlist.write("Characterize P Channel MOSFET\n")
-            netlist.write("\n")
-            for modelFile in self.char_mos.modelFiles:
-                netlist.write(".include {0}\n".format(modelFile))
-            netlist.write(".param length={0}\n".format(L))
-            netlist.write(".param mosChar_sb={0}\n".format(VSB))
-            netlist.write("\n")
-            netlist.write("vds  nDrain 0 dc 0\n")
-            netlist.write("vgs  nGate  0 dc 0\n")
-            netlist.write("vbs  nBulk  0 dc mosChar_sb\n")
-            netlist.write("\n")
-            netlist.write("mp nDrain nGate 0 nBulk {0}  L={{length*1e-6}} W={{{1}*1e-6}}\n".format(self.char_mos.modelP, self.char_mos.width))
-            netlist.write("\n")
-            netlist.write(".options dccap post brief accurate\n")
-            netlist.write(".control\n")
-            netlist.write("save all @mp[id] \n")
-            netlist.write("+ @mp[vth]\n")
-            netlist.write("+ @mp[gm]\n")
-            netlist.write("+ @mp[gmbs] \n")
-            netlist.write("+ @mp[gds] \n")
-            netlist.write("+ @mp[cgg] \n")
-            netlist.write("+ @mp[cgs] \n")
-            netlist.write("+ @mp[cgd] \n")
-            netlist.write("+ @mp[cdd] \n")
-            netlist.write("+ @mp[cbs] \n")
-            netlist.write("\n")
-            netlist.write("dc vgs 0 {0} {1} vds 0 {2} {3}\n".format(-self.char_mos.vgsMax, -self.char_mos.vgsStep, -self.char_mos.vdsMax, -self.char_mos.vdsStep))
-            netlist.write("\n")
-            netlist.write("let id   = @mp[id]\n")
-            netlist.write("let vt   = @mp[vth]\n")
-            netlist.write("let gm   = @mp[gm]\n")
-            netlist.write("let gmb  = @mp[gmbs]\n")
-            netlist.write("let gds  = @mp[gds]\n")
-            netlist.write("let cgg  = @mp[cgg]\n")
-            netlist.write("let cgs  = -@mp[cgs]\n")
-            netlist.write("let cgd  = -@mp[cgd]\n")
-            netlist.write("let cgb  = @mp[cgg] - (-@mp[cgs])-(-@mp[cgd])\n")
-            netlist.write("let cdd  = @mp[cdd]\n")
-            netlist.write("let css  = -@mp[cgs]-@mp[cbs]\n")
-            netlist.write("\n")
-            netlist.write(f"write {raw_file} id vt gm gmb gds cgg cgs cgd cgb cdd css\n")
-            netlist.write("exit\n")
-            netlist.write(".endc\n")
-            netlist.write(".end\n")
+        return dict(mos=netlist_path, mos_raw=raw_path)
 
 class SpectreNetlistWriter(AbstractNetlistWriter):
     def __init__(self, char_mos):
