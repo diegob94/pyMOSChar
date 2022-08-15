@@ -7,7 +7,7 @@ def split(plotDat):
     """ Converts each of the arrays in plotDat into 2-D arrays
     where the first index corresponds to the parameter being swept.
     """
-    sweep = plotDat[plotDat.keys()[0]]
+    sweep = plotDat[list(plotDat.keys())[0]]
     splitPos = np.argwhere(sweep == sweep[0])
     nSplits = len(splitPos)
     
@@ -18,7 +18,7 @@ def split(plotDat):
     splitPos = np.append(splitPos, len(sweep))
 
     for key in keys:
-        plotDatSplit[key] = np.zeros((nSplits, len(plotDat[key])/ nSplits))
+        plotDatSplit[key] = np.zeros((nSplits, int(len(plotDat[key])/ nSplits)))
         for splitPtr in range(nSplits):
             plotDatSplit[key][splitPtr] = plotDat[key][splitPos[splitPtr]:splitPos[splitPtr + 1]]
     
@@ -60,7 +60,7 @@ def read(fileName, simulator="ngspice"):
             tmpPos = dataBytes.find(b'Variables:')
             startPos = dataBytes.find(b'Variables:', tmpPos + len('Variables')) + len('Variables:')
             endPos = dataBytes.find(b'Binary:\n')
-            varData = str(dataBytes[startPos:endPos]).replace('\t', ' ').strip()
+            varData = dataBytes[startPos:endPos].decode().replace('\t', ' ').strip()
             varLines = varData.split('\n')
             varList = [line.strip().split()[1] for line in varLines]
             

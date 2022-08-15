@@ -15,7 +15,6 @@ pmos = "sky130_fd_pr__pfet_01v8"
 # Specify the MOSFET width in microns.
 width = 1
 
-
 # Specify the MOSFET lengths you're interested
 # in. The following code creates an array of
 # values from 0.1 to 5.1 in steps of 0.1. Note
@@ -34,6 +33,15 @@ mosLengths = np.arange(0.15, 100, 5)
 #np.arange(1, 10, 0.5),
 #np.arange(10, 100, 10))
 
+vsbMax = 1
+vsbStep = 20e-3
+
+## test
+mosLengths = np.linspace(0.15, 100, 2)
+vsbN = 2
+vsbMax = 1
+vsbStep = vsbMax/(vsbN-1)
+
 # Initialize the characterization process. Modify
 # the values below as per your requirements. Ensure
 # that the step values aren't too small. Otherwise
@@ -48,19 +56,20 @@ char_mos = CharMOS(
     pmos_subckt_path = "msky130_fd_pr__pfet_01v8",
     simOptions="",
     corners=("",),
-    datFileName="mosPDK_90_W{0}u.dat".format(width),
+    datFileName="sky130_PDK_W{0}u.dat".format(width),
     vgsMax=1,
     vgsStep=20e-3,
     vdsMax=1,
     vdsStep=20e-3,
-    vsbMax=1,
-    vsbStep=20e-3,
+    vsbMax=vsbMax,
+    vsbStep=vsbStep,
     numfing=1,
     temp=300,
     width=width,
     scale = 1,
+    max_cores=4
 )
 
 # This function call finally generates the required database.
-char_mos.genDB()
+char_mos.gen_db()
 

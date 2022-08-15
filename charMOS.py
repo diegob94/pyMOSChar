@@ -1,13 +1,24 @@
 import os
+from typing import Callable
 import os.path
 import sys
-import pickle
 import spice3read
 import numpy as np
 from abc import ABC, abstractmethod
 from pathlib import Path
 import subprocess as sp
 import shlex
+import gzip
+import json
+import dataclasses
+from multiprocessing.dummy import Pool
+import tqdm
+
+class NumpyArrayEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 class CharMOS:
     def __init__(self,
@@ -21,7 +32,7 @@ class CharMOS:
                 corners      = ('section=tt',),
                 nmos_subckt_path  = None,
                 pmos_subckt_path  = None,
-                datFileName = "MOS.dat",
+                datFileName = "MOS",
                 vgsStep     =  25e-3,
                 vdsStep     =  25e-3,
                 vsbStep     =  25e-3,
@@ -32,6 +43,7 @@ class CharMOS:
                 temp        = 300,
                 width       = 1,
                 scale       = 1e-6,
+                max_cores   = 1,
             ):
 
         for modelFile in modelFiles:
@@ -63,6 +75,12 @@ class CharMOS:
         self.output_dir = Path.cwd()/"work"
         self.libs = libs
         self.scale = scale
+        self.max_cores = max_cores
+
+        self.datFileName = Path(datFileName)
+        if not self.datFileName.is_absolute():
+            self.datFileName = self.output_dir / self.datFileName
+        self.datFileName = self.datFileName.with_suffix('.json.gz')
 
         if (self.simulator == "ngspice"):
             self.netlist_writer = NgspiceNetlistWriter(self)
@@ -77,6 +95,7 @@ class CharMOS:
         self.mosDat['pfet'] = {}
         self.mosDat['nfet'] = {}
         self.mosDat['modelFiles'] = modelFiles
+        self.mosDat['libs'] = libs
         self.mosDat['simulator'] = simulator
 
         for fet in ["nfet","pfet"]:
@@ -107,102 +126,102 @@ class CharMOS:
         self.mosDat['pfet']['vds'] = -vds
         self.mosDat['pfet']['vsb'] = vsb
 
-    def genDB(self):
-        progTotal = len(self.mosLengths)*len(self.vsb)
-        progCurr  = 0
-        print("Data generation in progress. Go have a coffee...")
+    @staticmethod
+    def read_db(db_path):
+        db_path = Path(db_path)
+        data = json.loads(gzip.decompress(db_path.read_bytes()).decode())
+        obj = CharMOS(
+            modelFiles  = data['modelFiles'],
+            libs        = data['libs'],
+            mosLengths  = data['nfet']['length'],
+            simulator   = data['simulator'],
+            nmos        = "cmosn",
+            pmos        = "cmosp",
+            simOptions  = "",
+            corners      = ('section=tt',),
+            nmos_subckt_path  = None,
+            pmos_subckt_path  = None,
+            datFileName = "MOS",
+            vgsStep     =  25e-3,
+            vdsStep     =  25e-3,
+            vsbStep     =  25e-3,
+            vgsMax      =  1.8,
+            vdsMax      =  1.8,
+            vsbMax      =  1.8,
+            numfing     = 1,
+            temp        = 300,
+            width       = 1,
+            scale       = 1e-6,
+            max_cores   = 1,
+        )
+        obj.mosDat = data
+        return obj
+    def gen_db(self):
+        run_simulations = True
+        print("Starting simulation sweep:")
+        print(f"  Length: min={self.mosLengths.min()} max={self.mosLengths.max()} length={len(self.mosLengths)}")
+        print(f"  VSB: min={self.vsb.min()} max={self.vsb.max()} length={len(self.vsb)}")
 
+        # Generate simulation jobs
+        jobs = []
         for idxL in range(len(self.mosLengths)):
             for idxVSB in range(len(self.vsb)):
+                jobs.append(Job(
+                    id=len(jobs),
+                    params=dict(idxL=idxL,idxVSB=idxVSB),
+                    function=self.run_job
+                ))
+        print(f"Executing {len(jobs)} simulation jobs with {self.max_cores} parallel cores")
 
-                print("Info: Simulating for L={0}, VSB={1}".format(idxL, idxVSB))
+        # Execute simulations
+        if run_simulations:
+            with Pool(self.max_cores) as pool:
+                self.pbar = tqdm.tqdm(total=len(jobs))
+                pool.map(lambda x: x(), jobs)
+                self.pbar.close()
 
-                log_file = self.output_dir/f"{self.simulator}_{idxL}_{idxVSB}.log"
-                netlists = self.netlist_writer.genNetlist(self.mosLengths[idxL], self.vsb[idxVSB])
-
-                if (self.simulator == "ngspice"):
-
-                    self.runSim(netlists["mos"].name,netlists["mos"].parent,log_file)
-                    simDat = spice3read.read(netlists["mos_raw"])
-
-                    self.mosDat['nfet']['id'][idxL][idxVSB]  = simDat['i(id)']
-                    self.mosDat['nfet']['vt'][idxL][idxVSB]  = simDat['vt']
-                    self.mosDat['nfet']['gm'][idxL][idxVSB]  = simDat['gm']
-                    self.mosDat['nfet']['gmb'][idxL][idxVSB] = simDat['gmb']
-                    self.mosDat['nfet']['gds'][idxL][idxVSB] = simDat['gds']
-                    self.mosDat['nfet']['cgg'][idxL][idxVSB] = simDat['cgg']
-                    self.mosDat['nfet']['cgs'][idxL][idxVSB] = simDat['cgs']
-                    self.mosDat['nfet']['cgd'][idxL][idxVSB] = simDat['cgd']
-                    self.mosDat['nfet']['cgb'][idxL][idxVSB] = simDat['cgb']
-                    self.mosDat['nfet']['cdd'][idxL][idxVSB] = simDat['cdd']
-                    self.mosDat['nfet']['css'][idxL][idxVSB] = simDat['css']
-
-#                    self.mosDat['pfet']['id'][idxL][idxVSB]  = simDat['i(id)']
-#                    self.mosDat['pfet']['vt'][idxL][idxVSB]  = simDat['vt']
-#                    self.mosDat['pfet']['gm'][idxL][idxVSB]  = simDat['gm']
-#                    self.mosDat['pfet']['gmb'][idxL][idxVSB] = simDat['gmb']
-#                    self.mosDat['pfet']['gds'][idxL][idxVSB] = simDat['gds']
-#                    self.mosDat['pfet']['cgg'][idxL][idxVSB] = simDat['cgg']
-#                    self.mosDat['pfet']['cgs'][idxL][idxVSB] = simDat['cgs']
-#                    self.mosDat['pfet']['cgd'][idxL][idxVSB] = simDat['cgd']
-#                    self.mosDat['pfet']['cgb'][idxL][idxVSB] = simDat['cgb']
-#                    self.mosDat['pfet']['cdd'][idxL][idxVSB] = simDat['cdd']
-#                    self.mosDat['pfet']['css'][idxL][idxVSB] = simDat['css']
-
-                elif (self.simulator == "spectre"):
-
-                    self.runSim(netlists["mos"].name,netlists["mos"].parent, log_file)
-                    simDat = spice3read.read(netlists["mos_raw"], 'spectre')
-
-                    if (self.subcktPath == ""):
-                        nmos = "mn"
-                        pmos = "mp"
-                    else:
-                        nmos = "mn." + self.subcktPath
-                        pmos = "mp." + self.subcktPath
-
-                    self.mosDat['nfet']['id'][idxL][idxVSB]  = simDat['{0}:ids'.format(nmos)]
-                    self.mosDat['nfet']['vt'][idxL][idxVSB]  = simDat['{0}:vth'.format(nmos)]
-                    self.mosDat['nfet']['gm'][idxL][idxVSB]  = simDat['{0}:gm'.format(nmos)]
-                    self.mosDat['nfet']['gmb'][idxL][idxVSB] = simDat['{0}:gmbs'.format(nmos)]
-                    self.mosDat['nfet']['gds'][idxL][idxVSB] = simDat['{0}:gds'.format(nmos)]
-                    self.mosDat['nfet']['cgg'][idxL][idxVSB] = simDat['{0}:cgg'.format(nmos)]
-                    self.mosDat['nfet']['cgs'][idxL][idxVSB] = simDat['{0}:cgs'.format(nmos)]
-                    self.mosDat['nfet']['cgd'][idxL][idxVSB] = simDat['{0}:cgd'.format(nmos)]
-                    self.mosDat['nfet']['cgb'][idxL][idxVSB] = simDat['{0}:cgb'.format(nmos)]
-                    self.mosDat['nfet']['cdd'][idxL][idxVSB] = simDat['{0}:cdd'.format(nmos)]
-                    self.mosDat['nfet']['css'][idxL][idxVSB] = simDat['{0}:css'.format(nmos)]
-
-                    self.mosDat['pfet']['id'][idxL][idxVSB]  = simDat['{0}:ids'.format(pmos)]
-                    self.mosDat['pfet']['vt'][idxL][idxVSB]  = simDat['{0}:vth'.format(pmos)]
-                    self.mosDat['pfet']['gm'][idxL][idxVSB]  = simDat['{0}:gm'.format(pmos)]
-                    self.mosDat['pfet']['gmb'][idxL][idxVSB] = simDat['{0}:gmbs'.format(pmos)]
-                    self.mosDat['pfet']['gds'][idxL][idxVSB] = simDat['{0}:gds'.format(pmos)]
-                    self.mosDat['pfet']['cgg'][idxL][idxVSB] = simDat['{0}:cgg'.format(pmos)]
-                    self.mosDat['pfet']['cgs'][idxL][idxVSB] = simDat['{0}:cgs'.format(pmos)]
-                    self.mosDat['pfet']['cgd'][idxL][idxVSB] = simDat['{0}:cgd'.format(pmos)]
-                    self.mosDat['pfet']['cgb'][idxL][idxVSB] = simDat['{0}:cgb'.format(pmos)]
-                    self.mosDat['pfet']['cdd'][idxL][idxVSB] = simDat['{0}:cdd'.format(pmos)]
-                    self.mosDat['pfet']['css'][idxL][idxVSB] = simDat['{0}:css'.format(pmos)]
-
-                progCurr += 1
-                progPercent = 100 * progCurr / progTotal
-                print("progress:",progPercent)
+        # Collect result data
+        for job in jobs:
+            self.netlist_writer.read_data(job.results["raw"],idxL=job.params['idxL'],idxVSB=job.params['idxVSB'])
 
         print()
         print("Data generated. Saving...")
-        pickle.dump(mosDat, open(datFileName, "wb"), pickle.HIGHEST_PROTOCOL)
-        print("Done! Data saved in " + datFileName)
+        self.datFileName.write_bytes(gzip.compress(json.dumps(self.mosDat,cls=NumpyArrayEncoder).encode()))
+        print(f"Done! Data saved in {self.datFileName.resolve()}")
 
-    def runSim(self, fileName, cwd, log_file):
+    def run_job(self,idxL,idxVSB):
+        self.pbar.write("Info: Simulating for L={0}, VSB={1}".format(self.mosLengths[idxL], self.vsb[idxVSB]))
+        log_file = self.output_dir/f"{self.simulator}_{idxL}_{idxVSB}.log"
+        netlists = self.netlist_writer.genNetlist(self.mosLengths[idxL], self.vsb[idxVSB])
+        cmd = [self.simulator] + self.simOptions + [netlists["mos"].name]
+        run_command(cmd,netlists["mos"].parent,log_file,print=self.pbar.write)
+        self.pbar.update()
+        return dict(raw=netlists['mos_raw'],log=log_file)
+
+def run_command(cmd, cwd=Path.cwd(), log_file=None, print=print):
+    run_args = {}
+    if isinstance(cmd,str):
+        cmd = shlex.split(cmd)
+    if log_file is not None:
         log_file = Path(log_file)
-        cmd = [self.simulator] + self.simOptions + [fileName]
         print(f"subprocess.run> {shlex.join(cmd)} (cwd={cwd}, log_file={log_file})")
-        with log_file.open("w") as log:
-            r = sp.run(cmd, stdout=log, stderr=log, cwd=cwd, check=True)
-        return r
+        log = log_file.open('w')
+        run_args = dict(stdout=log, stderr=log)
+    r = sp.run(cmd, cwd=cwd, check=True, **run_args)
+    if log_file is not None:
+        log.close()
+    return r
 
-class AbstractNetlistWriter(ABC):
+@dataclasses.dataclass
+class Job:
+    id: int
+    function: Callable
+    params: dict = dataclasses.field(default_factory=dict)
+    results: dict = dataclasses.field(default_factory=dict)
+    def __call__(self):
+        self.results = self.function(**self.params)
+
+class NetlistWriter(ABC):
     def __init__(self, char_mos):
         self.output_dir = Path(char_mos.output_dir)
         self.output_dir.mkdir(exist_ok=True)
@@ -210,8 +229,11 @@ class AbstractNetlistWriter(ABC):
     @abstractmethod
     def genNetlist(self, L, VSB):
         pass
+    @abstractmethod
+    def read_data(self, raw_path, **kwargs):
+        pass
 
-class NgspiceNetlistWriter(AbstractNetlistWriter):
+class NgspiceNetlistWriter(NetlistWriter):
     def __init__(self, char_mos):
         super().__init__(char_mos)
     def genNetlist(self, L, VSB):
@@ -282,8 +304,26 @@ class NgspiceNetlistWriter(AbstractNetlistWriter):
             netlist.write(".endc\n")
             netlist.write(".end\n")
         return dict(mos=netlist_path, mos_raw=raw_path)
+    def read_data(self, raw_path, **kwargs):
+        idxL = kwargs['idxL']
+        idxVSB = kwargs['idxVSB']
+        simDat = spice3read.read(raw_path)
+        for c in ['n','p']:
+            fet = c + 'fet'
+            suffix = '_' + c
+            self.char_mos.mosDat[fet]['id'][idxL][idxVSB]  = simDat[f'i(id{suffix})']
+            self.char_mos.mosDat[fet]['vt'][idxL][idxVSB]  = simDat[f'v(vt{suffix})']
+            self.char_mos.mosDat[fet]['gm'][idxL][idxVSB]  = simDat['gm'+suffix]
+            self.char_mos.mosDat[fet]['gmb'][idxL][idxVSB] = simDat['gmb'+suffix]
+            self.char_mos.mosDat[fet]['gds'][idxL][idxVSB] = simDat['gds'+suffix]
+            self.char_mos.mosDat[fet]['cgg'][idxL][idxVSB] = simDat['cgg'+suffix]
+            self.char_mos.mosDat[fet]['cgs'][idxL][idxVSB] = simDat['cgs'+suffix]
+            self.char_mos.mosDat[fet]['cgd'][idxL][idxVSB] = simDat['cgd'+suffix]
+            self.char_mos.mosDat[fet]['cgb'][idxL][idxVSB] = simDat['cgb'+suffix]
+            self.char_mos.mosDat[fet]['cdd'][idxL][idxVSB] = simDat['cdd'+suffix]
+            self.char_mos.mosDat[fet]['css'][idxL][idxVSB] = simDat['css'+suffix]
 
-class SpectreNetlistWriter(AbstractNetlistWriter):
+class SpectreNetlistWriter(NetlistWriter):
     def __init__(self, char_mos):
         super().__init__(char_mos)
     def genNetlist(self, L, VSB):
@@ -319,5 +359,29 @@ class SpectreNetlistWriter(AbstractNetlistWriter):
             netlist.write('sweepvgs dc param=mosChar_gs start=0 stop={0} step={1} \n'.format(self.char_mos.vgsMax, self.char_mos.vgsStep))
             netlist.write('}\n')
         return dict(mos=netlist_path, mos_raw = raw_path)
+    def read_data(self, raw_path, **kwargs):
+        idxL = kwargs['idxL']
+        idxVSB = kwargs['idxVSB']
+        simDat = spice3read.read(raw_path, 'spectre')
 
+        if (self.char_mos.subcktPath == ""):
+            nmos = "mn"
+            pmos = "mp"
+        else:
+            nmos = "mn." + self.char_mos.subcktPath
+            pmos = "mp." + self.char_mos.subcktPath
+
+        for c,mos in [['n',nmos],['p',pmos]]:
+            fet = c + 'fet'
+            self.char_mos.mosDat[fet]['id'][idxL][idxVSB]  = simDat['{0}:ids'.format(mos)]
+            self.char_mos.mosDat[fet]['vt'][idxL][idxVSB]  = simDat['{0}:vth'.format(mos)]
+            self.char_mos.mosDat[fet]['gm'][idxL][idxVSB]  = simDat['{0}:gm'.format(mos)]
+            self.char_mos.mosDat[fet]['gmb'][idxL][idxVSB] = simDat['{0}:gmbs'.format(mos)]
+            self.char_mos.mosDat[fet]['gds'][idxL][idxVSB] = simDat['{0}:gds'.format(mos)]
+            self.char_mos.mosDat[fet]['cgg'][idxL][idxVSB] = simDat['{0}:cgg'.format(mos)]
+            self.char_mos.mosDat[fet]['cgs'][idxL][idxVSB] = simDat['{0}:cgs'.format(mos)]
+            self.char_mos.mosDat[fet]['cgd'][idxL][idxVSB] = simDat['{0}:cgd'.format(mos)]
+            self.char_mos.mosDat[fet]['cgb'][idxL][idxVSB] = simDat['{0}:cgb'.format(mos)]
+            self.char_mos.mosDat[fet]['cdd'][idxL][idxVSB] = simDat['{0}:cdd'.format(mos)]
+            self.char_mos.mosDat[fet]['css'][idxL][idxVSB] = simDat['{0}:css'.format(mos)]
 
