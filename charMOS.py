@@ -14,11 +14,56 @@ import dataclasses
 from multiprocessing.dummy import Pool
 import tqdm
 
-class NumpyArrayEncoder(json.JSONEncoder):
+class MosDataEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
+        if dataclasses.is_dataclass(obj):
+            return dataclasses.asdict(obj)
         return super().default(obj)
+
+@dataclasses.dataclass
+class FetData:
+    corners: list
+    temp: float
+    length: np.ndarray
+    width: float
+    numfing: float
+    # 4D arrays to store MOS data---->f(L,               VSB,      VDS,      VGS      )
+    id: np.ndarray
+    vt: np.ndarray
+    gm: np.ndarray
+    gmb: np.ndarray
+    gds: np.ndarray
+    cgg: np.ndarray
+    cgs: np.ndarray
+    cgd: np.ndarray
+    cgb: np.ndarray
+    cdd: np.ndarray
+    css: np.ndarray
+    # Pin voltages
+    vgs: np.ndarray
+    vds: np.ndarray
+    vsb: np.ndarray
+    def __post_init__(self):
+        for field in dataclasses.fields(self):
+            if field.type == np.ndarray:
+                value = getattr(self,field.name)
+                if isinstance(value,list):
+                    setattr(self, field.name, np.array(value))
+
+@dataclasses.dataclass
+class MosData:
+    pfet: FetData
+    nfet: FetData
+    modelFiles: list
+    libs: dict
+    simulator: str
+    def __post_init__(self):
+        if isinstance(self.nfet,dict):
+            self.nfet = FetData(**self.nfet)
+        if isinstance(self.pfet,dict):
+            self.pfet = FetData(**self.pfet)
 
 class CharMOS:
     def __init__(self,
@@ -76,6 +121,7 @@ class CharMOS:
         self.libs = libs
         self.scale = scale
         self.max_cores = max_cores
+        self.run_simulations = False
 
         self.datFileName = Path(datFileName)
         if not self.datFileName.is_absolute():
@@ -91,40 +137,53 @@ class CharMOS:
             print("ERROR: Invalid/Unsupported simulator specified")
             sys.exit(0)
 
-        self.mosDat = {}
-        self.mosDat['pfet'] = {}
-        self.mosDat['nfet'] = {}
-        self.mosDat['modelFiles'] = modelFiles
-        self.mosDat['libs'] = libs
-        self.mosDat['simulator'] = simulator
-
-        for fet in ["nfet","pfet"]:
-            self.mosDat[fet]['corners'] = corners
-            self.mosDat[fet]['temp'] = temp
-            self.mosDat[fet]['length'] = mosLengths
-            self.mosDat[fet]['width'] = width
-            self.mosDat[fet]['numfing'] = numfing
-
-            # 4D arrays to store MOS data---->f(L,               VSB,      VDS,      VGS      )
-            self.mosDat[fet]['id']  = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['vt']  = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['gm']  = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['gmb'] = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['gds'] = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['cgg'] = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['cgs'] = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['cgd'] = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['cgb'] = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['cdd'] = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-            self.mosDat[fet]['css'] = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs)))
-
-        self.mosDat['nfet']['vgs'] = vgs
-        self.mosDat['nfet']['vds'] = vds
-        self.mosDat['nfet']['vsb'] = -vsb
-
-        self.mosDat['pfet']['vgs'] = -vgs
-        self.mosDat['pfet']['vds'] = -vds
-        self.mosDat['pfet']['vsb'] = vsb
+        self.mosDat = MosData(
+            modelFiles=modelFiles,
+            libs=libs,
+            simulator=simulator,
+            nfet = FetData(
+                corners=corners,
+                temp=temp,
+                length=mosLengths,
+                width=width,
+                numfing=numfing,
+                id  = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                vt  = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                gm  = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                gmb = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                gds = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cgg = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cgs = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cgd = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cgb = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cdd = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                css = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                vgs = vgs,
+                vds = vds,
+                vsb = -vsb,
+            ),
+            pfet = FetData(
+                corners=corners,
+                temp=temp,
+                length=mosLengths,
+                width=width,
+                numfing=numfing,
+                id  = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                vt  = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                gm  = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                gmb = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                gds = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cgg = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cgs = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cgd = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cgb = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                cdd = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                css = np.zeros((len(mosLengths), len(vsb), len(vds), len(vgs))),
+                vgs = -vgs,
+                vds = -vds,
+                vsb = vsb,
+            ),
+        )
 
     @staticmethod
     def read_db(db_path):
@@ -154,10 +213,9 @@ class CharMOS:
             scale       = 1e-6,
             max_cores   = 1,
         )
-        obj.mosDat = data
+        obj.mosDat = MosData(**data)
         return obj
     def gen_db(self):
-        run_simulations = True
         print("Starting simulation sweep:")
         print(f"  Length: min={self.mosLengths.min()} max={self.mosLengths.max()} length={len(self.mosLengths)}")
         print(f"  VSB: min={self.vsb.min()} max={self.vsb.max()} length={len(self.vsb)}")
@@ -174,11 +232,10 @@ class CharMOS:
         print(f"Executing {len(jobs)} simulation jobs with {self.max_cores} parallel cores")
 
         # Execute simulations
-        if run_simulations:
-            with Pool(self.max_cores) as pool:
-                self.pbar = tqdm.tqdm(total=len(jobs))
-                pool.map(lambda x: x(), jobs)
-                self.pbar.close()
+        with Pool(self.max_cores) as pool:
+            self.pbar = tqdm.tqdm(total=len(jobs))
+            pool.map(lambda x: x(), jobs)
+            self.pbar.close()
 
         # Collect result data
         for job in jobs:
@@ -186,7 +243,7 @@ class CharMOS:
 
         print()
         print("Data generated. Saving...")
-        self.datFileName.write_bytes(gzip.compress(json.dumps(self.mosDat,cls=NumpyArrayEncoder).encode()))
+        self.datFileName.write_bytes(gzip.compress(json.dumps(self.mosDat,cls=MosDataEncoder).encode()))
         print(f"Done! Data saved in {self.datFileName.resolve()}")
 
     def run_job(self,idxL,idxVSB):
@@ -194,7 +251,8 @@ class CharMOS:
         log_file = self.output_dir/f"{self.simulator}_{idxL}_{idxVSB}.log"
         netlists = self.netlist_writer.genNetlist(self.mosLengths[idxL], self.vsb[idxVSB])
         cmd = [self.simulator] + self.simOptions + [netlists["mos"].name]
-        run_command(cmd,netlists["mos"].parent,log_file,print=self.pbar.write)
+        if self.run_simulations:
+            run_command(cmd,netlists["mos"].parent,log_file,print=self.pbar.write)
         self.pbar.update()
         return dict(raw=netlists['mos_raw'],log=log_file)
 
@@ -309,19 +367,19 @@ class NgspiceNetlistWriter(NetlistWriter):
         idxVSB = kwargs['idxVSB']
         simDat = spice3read.read(raw_path)
         for c in ['n','p']:
-            fet = c + 'fet'
+            fet = getattr(self.char_mos.mosDat, c + 'fet')
             suffix = '_' + c
-            self.char_mos.mosDat[fet]['id'][idxL][idxVSB]  = simDat[f'i(id{suffix})']
-            self.char_mos.mosDat[fet]['vt'][idxL][idxVSB]  = simDat[f'v(vt{suffix})']
-            self.char_mos.mosDat[fet]['gm'][idxL][idxVSB]  = simDat['gm'+suffix]
-            self.char_mos.mosDat[fet]['gmb'][idxL][idxVSB] = simDat['gmb'+suffix]
-            self.char_mos.mosDat[fet]['gds'][idxL][idxVSB] = simDat['gds'+suffix]
-            self.char_mos.mosDat[fet]['cgg'][idxL][idxVSB] = simDat['cgg'+suffix]
-            self.char_mos.mosDat[fet]['cgs'][idxL][idxVSB] = simDat['cgs'+suffix]
-            self.char_mos.mosDat[fet]['cgd'][idxL][idxVSB] = simDat['cgd'+suffix]
-            self.char_mos.mosDat[fet]['cgb'][idxL][idxVSB] = simDat['cgb'+suffix]
-            self.char_mos.mosDat[fet]['cdd'][idxL][idxVSB] = simDat['cdd'+suffix]
-            self.char_mos.mosDat[fet]['css'][idxL][idxVSB] = simDat['css'+suffix]
+            fet.id[idxL][idxVSB]  = simDat[f'i(id{suffix})']
+            fet.vt[idxL][idxVSB]  = simDat[f'v(vt{suffix})']
+            fet.gm[idxL][idxVSB]  = simDat['gm'+suffix]
+            fet.gmb[idxL][idxVSB] = simDat['gmb'+suffix]
+            fet.gds[idxL][idxVSB] = simDat['gds'+suffix]
+            fet.cgg[idxL][idxVSB] = simDat['cgg'+suffix]
+            fet.cgs[idxL][idxVSB] = simDat['cgs'+suffix]
+            fet.cgd[idxL][idxVSB] = simDat['cgd'+suffix]
+            fet.cgb[idxL][idxVSB] = simDat['cgb'+suffix]
+            fet.cdd[idxL][idxVSB] = simDat['cdd'+suffix]
+            fet.css[idxL][idxVSB] = simDat['css'+suffix]
 
 class SpectreNetlistWriter(NetlistWriter):
     def __init__(self, char_mos):
