@@ -1,5 +1,5 @@
 
-from charMOS import CharMOS
+from charMOS import MosData
 
-mos_db = CharMOS.read_db('work/sky130_PDK_W1u.json.gz')
+mos_db = MosData.read_db('work/sky130_PDK_W1u.json.gz')
 

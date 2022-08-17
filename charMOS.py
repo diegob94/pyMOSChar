@@ -2,6 +2,7 @@ import os
 from typing import Callable
 import os.path
 import sys
+
 import spice3read
 import numpy as np
 from abc import ABC, abstractmethod
@@ -9,61 +10,48 @@ from pathlib import Path
 import subprocess as sp
 import shlex
 import gzip
-import json
-import dataclasses
 from multiprocessing.dummy import Pool
 import tqdm
+from dataclasses_json import DataClassJsonMixin
+from typing import List, Dict, Any
+from dataclasses import dataclass, field, asdict
+from numpy_json import NumpyField
 
-class MosDataEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if dataclasses.is_dataclass(obj):
-            return dataclasses.asdict(obj)
-        return super().default(obj)
-
-@dataclasses.dataclass
-class FetData:
-    corners: list
+@dataclass
+class FetData(DataClassJsonMixin):
+    corners: List[str]
     temp: float
-    length: np.ndarray
     width: float
     numfing: float
-    # 4D arrays to store MOS data---->f(L,               VSB,      VDS,      VGS      )
-    id: np.ndarray
-    vt: np.ndarray
-    gm: np.ndarray
-    gmb: np.ndarray
-    gds: np.ndarray
-    cgg: np.ndarray
-    cgs: np.ndarray
-    cgd: np.ndarray
-    cgb: np.ndarray
-    cdd: np.ndarray
-    css: np.ndarray
+    length: np.ndarray = NumpyField()
+    # 4D arrays to store MOS data---->f(L,VSB,VDS,VGS)
+    id: np.ndarray = NumpyField()
+    vt: np.ndarray = NumpyField()
+    gm: np.ndarray = NumpyField()
+    gmb: np.ndarray = NumpyField()
+    gds: np.ndarray = NumpyField()
+    cgg: np.ndarray = NumpyField()
+    cgs: np.ndarray = NumpyField()
+    cgd: np.ndarray = NumpyField()
+    cgb: np.ndarray = NumpyField()
+    cdd: np.ndarray = NumpyField()
+    css: np.ndarray = NumpyField()
     # Pin voltages
-    vgs: np.ndarray
-    vds: np.ndarray
-    vsb: np.ndarray
-    def __post_init__(self):
-        for field in dataclasses.fields(self):
-            if field.type == np.ndarray:
-                value = getattr(self,field.name)
-                if isinstance(value,list):
-                    setattr(self, field.name, np.array(value))
+    vgs: np.ndarray = NumpyField()
+    vds: np.ndarray = NumpyField()
+    vsb: np.ndarray = NumpyField()
 
-@dataclasses.dataclass
-class MosData:
+@dataclass
+class MosData(DataClassJsonMixin):
     pfet: FetData
     nfet: FetData
-    modelFiles: list
-    libs: dict
+    modelFiles: List[str]
+    libs: Dict[str,str]
     simulator: str
-    def __post_init__(self):
-        if isinstance(self.nfet,dict):
-            self.nfet = FetData(**self.nfet)
-        if isinstance(self.pfet,dict):
-            self.pfet = FetData(**self.pfet)
+    @staticmethod
+    def read_db(db_path):
+        db_path = Path(db_path)
+        return MosData.schema().loads(gzip.decompress(db_path.read_bytes()))
 
 class CharMOS:
     def __init__(self,
@@ -184,37 +172,6 @@ class CharMOS:
                 vsb = vsb,
             ),
         )
-
-    @staticmethod
-    def read_db(db_path):
-        db_path = Path(db_path)
-        data = json.loads(gzip.decompress(db_path.read_bytes()).decode())
-        obj = CharMOS(
-            modelFiles  = data['modelFiles'],
-            libs        = data['libs'],
-            mosLengths  = data['nfet']['length'],
-            simulator   = data['simulator'],
-            nmos        = "cmosn",
-            pmos        = "cmosp",
-            simOptions  = "",
-            corners      = ('section=tt',),
-            nmos_subckt_path  = None,
-            pmos_subckt_path  = None,
-            datFileName = "MOS",
-            vgsStep     =  25e-3,
-            vdsStep     =  25e-3,
-            vsbStep     =  25e-3,
-            vgsMax      =  1.8,
-            vdsMax      =  1.8,
-            vsbMax      =  1.8,
-            numfing     = 1,
-            temp        = 300,
-            width       = 1,
-            scale       = 1e-6,
-            max_cores   = 1,
-        )
-        obj.mosDat = MosData(**data)
-        return obj
     def gen_db(self):
         print("Starting simulation sweep:")
         print(f"  Length: min={self.mosLengths.min()} max={self.mosLengths.max()} length={len(self.mosLengths)}")
@@ -243,8 +200,10 @@ class CharMOS:
 
         print()
         print("Data generated. Saving...")
-        self.datFileName.write_bytes(gzip.compress(json.dumps(self.mosDat,cls=MosDataEncoder).encode()))
+        self.datFileName.write_bytes(gzip.compress(self.mosDat.to_json().encode()))
         print(f"Done! Data saved in {self.datFileName.resolve()}")
+
+        return self.mosDat
 
     def run_job(self,idxL,idxVSB):
         self.pbar.write("Info: Simulating for L={0}, VSB={1}".format(self.mosLengths[idxL], self.vsb[idxVSB]))
@@ -270,12 +229,12 @@ def run_command(cmd, cwd=Path.cwd(), log_file=None, print=print):
         log.close()
     return r
 
-@dataclasses.dataclass
+@dataclass
 class Job:
     id: int
     function: Callable
-    params: dict = dataclasses.field(default_factory=dict)
-    results: dict = dataclasses.field(default_factory=dict)
+    params: dict = field(default_factory=dict)
+    results: dict = field(default_factory=dict)
     def __call__(self):
         self.results = self.function(**self.params)
 
