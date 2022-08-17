@@ -3,19 +3,22 @@ from typing import Callable
 import os.path
 import sys
 
-import spice3read
 import numpy as np
 from abc import ABC, abstractmethod
 from pathlib import Path
 import subprocess as sp
 import shlex
 import gzip
-from multiprocessing.dummy import Pool
+from multiprocessing.pool import ThreadPool
 import tqdm
 from dataclasses_json import DataClassJsonMixin
 from typing import List, Dict, Any
 from dataclasses import dataclass, field, asdict
-from numpy_json import NumpyField
+from threading import Lock
+from scipy.interpolate import interpn
+
+import pyMOSChar.spice3read as spice3read
+from pyMOSChar.numpy_json import NumpyField
 
 @dataclass
 class FetData(DataClassJsonMixin):
@@ -40,6 +43,8 @@ class FetData(DataClassJsonMixin):
     vgs: np.ndarray = NumpyField()
     vds: np.ndarray = NumpyField()
     vsb: np.ndarray = NumpyField()
+    def __getitem__(self, key):
+        return getattr(self,key)
 
 @dataclass
 class MosData(DataClassJsonMixin):
@@ -52,6 +57,129 @@ class MosData(DataClassJsonMixin):
     def read_db(db_path):
         db_path = Path(db_path)
         return MosData.schema().loads(gzip.decompress(db_path.read_bytes()))
+    def __getitem__(self, key):
+        return getattr(self,key)
+    def lookup(self, mosType, *outVars, **inVars):
+
+        # Check if a valid MOSFET type is specified.
+        mosType = mosType.lower()
+        if (mosType not in ['nfet', 'pfet']):
+            print("ERROR: Invalid MOSFET type. Valid types are 'nfet' and 'pfet'.")
+
+        defaultL = min(self[mosType]['length'])
+        defaultVGS = self[mosType]['vgs']
+        defaultVDS = max(self[mosType]['vds'])/2;
+        defaultVSB  = 0;
+
+        # Figure out the mode of operation and the requested output arguments.
+        # Mode 1 : Just one variable requested as output.
+        # Mode 2 : A ratio or product of variables requested as output.
+        # Mode 3 : Two ratios or products of variables requested as output.
+        mode = 1
+        outVarList = []
+
+        if (len(outVars) == 2):
+            mode = 3
+            for outVar in outVars:
+                if (type(outVar) == str):
+                    if (outVar.find('/') != -1):
+                        pos = outVar.find('/')
+                        outVarList.append(outVar[:pos].lower())
+                        outVarList.append(outVar[pos])
+                        outVarList.append(outVar[pos+1:].lower())
+                    elif (outVar.find('*') != -1):
+                        pos = outVar.find('*')
+                        outVarList.append(outVar[:pos].lower())
+                        outVarList.append(outVar[pos])
+                        outVarList.append(outVar[pos+1:].lower())
+                    else:
+                        print("ERROR: Outputs requested must be a ratio or product of variables")
+                        return None
+                else:
+                    print("ERROR: Output variables must be strings!")
+                    return None
+        elif (len(outVars) == 1):
+            outVar = outVars[0]
+            if (type(outVar) == str):
+                if (outVar.find('/') == -1 and outVar.find('*') == -1):
+                    mode = 1
+                    outVarList.append( outVar.lower())
+                else:
+                    mode = 2
+                    if (outVar.find('/') != -1):
+                        pos = outVar.find('/')
+                        outVarList.append(outVar[:pos].lower())
+                        outVarList.append(outVar[pos])
+                        outVarList.append(outVar[pos+1:].lower())
+                    elif (outVar.find('*') != -1):
+                        pos = outVar.find('*')
+                        outVarList.append(outVar[:pos].lower())
+                        outVarList.append(outVar[pos])
+                        outVarList.append(outVar[pos+1:].lower())
+            else:
+                print("ERROR: Output variables must be strings!")
+                return None
+        else:
+            print("ERROR: No output variables specified")
+            return None
+
+        # Figure out the input arguments. Set to default those not specified.
+        varNames = [key for key in inVars.keys()]
+
+        for varName in varNames:
+            if (not varName.islower()):
+                print("ERROR: Keyword args must be lower case. Allowed arguments: l, vgs, cds and vsb.")
+                return None
+            if (varName not in ['l', 'vgs', 'vds', 'vsb']):
+                print("ERROR: Invalid keyword arg(s). Allowed arguments: l, vgs, cds and vsb.")
+                return None
+
+        L = defaultL
+        VGS = defaultVGS
+        VDS = defaultVDS
+        VSB = defaultVSB
+        if ('l' in varNames):
+            L = inVars['l']
+        if ('vgs' in varNames):
+            VGS = inVars['vgs']
+        if ('vds' in varNames):
+            VDS = inVars['vds']
+        if ('vsb' in varNames):
+            VSB = inVars['vsb']
+
+        xdata = None
+        ydata = None
+
+        # Extract the data that was requested
+        if (mode == 1):
+            ydata = self[mosType][outVarList[0]]
+        elif (mode == 2 or mode == 3):
+            ydata = eval("self[mosType][outVarList[0]]" + outVarList[1] + "self[mosType][outVarList[2]]")
+            if (mode == 3):
+                xdata = eval("self[mosType][outVarList[3]]" + outVarList[4] + "self[mosType][outVarList[5]]")
+
+        # Interpolate for the input variables provided
+        if (mosType == 'nfet'):
+            points = (self[mosType]['length'], -self[mosType]['vsb'], self[mosType]['vds'], self[mosType]['vgs'])
+        else:
+            points = (self[mosType]['length'],  self[mosType]['vsb'], -self[mosType]['vds'], -self[mosType]['vgs'])
+
+        xi_mesh = np.array(np.meshgrid(L, VSB, VDS, VGS))
+        xi = np.rollaxis(xi_mesh, 0, 5)
+        xi = xi.reshape(int(xi_mesh.size/4), 4)
+
+        len_L = len(L) if type(L) == np.ndarray or type(L) == list else 1
+        len_VGS = len(VGS) if type(VGS) == np.ndarray or type(VGS) == list else 1
+        len_VDS = len(VDS) if type(VDS) == np.ndarray or type(VDS) == list else 1
+        len_VSB = len(VSB) if type(VSB) == np.ndarray or type(VSB) == list else 1
+
+        if (mode == 1 or mode == 2):
+            result = np.squeeze(interpn(points, ydata, xi).reshape(len_L, len_VSB, len_VDS, len_VGS))
+        elif (mode == 3):
+            print("ERROR: Mode 3 not supported yet :-(")
+
+        # Return the result
+        return result
 
 class CharMOS:
     def __init__(self,
@@ -78,6 +206,8 @@ class CharMOS:
                 scale       = 1e-6,
                 max_cores   = 1,
             ):
+
+        self.mutex = Lock()
 
         for modelFile in modelFiles:
             if (not os.path.isfile(modelFile)):
@@ -109,7 +239,7 @@ class CharMOS:
         self.libs = libs
         self.scale = scale
         self.max_cores = max_cores
-        self.run_simulations = False
+        self.run_simulations = True
 
         self.datFileName = Path(datFileName)
         if not self.datFileName.is_absolute():
@@ -189,7 +319,7 @@ class CharMOS:
         print(f"Executing {len(jobs)} simulation jobs with {self.max_cores} parallel cores")
 
         # Execute simulations
-        with Pool(self.max_cores) as pool:
+        with ThreadPool(self.max_cores) as pool:
             self.pbar = tqdm.tqdm(total=len(jobs))
             pool.map(lambda x: x(), jobs)
             self.pbar.close()
@@ -206,22 +336,28 @@ class CharMOS:
         return self.mosDat
 
     def run_job(self,idxL,idxVSB):
+        def custom_print(*args,**kwargs):
+            self.pbar.write(*args,**kwargs)
+            self.mutex.release()
+        self.mutex.acquire()
         self.pbar.write("Info: Simulating for L={0}, VSB={1}".format(self.mosLengths[idxL], self.vsb[idxVSB]))
         log_file = self.output_dir/f"{self.simulator}_{idxL}_{idxVSB}.log"
         netlists = self.netlist_writer.genNetlist(self.mosLengths[idxL], self.vsb[idxVSB])
         cmd = [self.simulator] + self.simOptions + [netlists["mos"].name]
         if self.run_simulations:
-            run_command(cmd,netlists["mos"].parent,log_file,print=self.pbar.write)
+            run_command(cmd,netlists["mos"].parent,log_file,_print=custom_print)
+        else:
+            self.mutex.release()
         self.pbar.update()
         return dict(raw=netlists['mos_raw'],log=log_file)
 
-def run_command(cmd, cwd=Path.cwd(), log_file=None, print=print):
+def run_command(cmd, cwd=Path.cwd(), log_file=None, _print=print):
     run_args = {}
     if isinstance(cmd,str):
         cmd = shlex.split(cmd)
     if log_file is not None:
         log_file = Path(log_file)
-        print(f"subprocess.run> {shlex.join(cmd)} (cwd={cwd}, log_file={log_file})")
+        _print(f"subprocess.run> {shlex.join(cmd)} (cwd={cwd}, log_file={log_file})")
         log = log_file.open('w')
         run_args = dict(stdout=log, stderr=log)
     r = sp.run(cmd, cwd=cwd, check=True, **run_args)
@@ -243,6 +379,8 @@ class NetlistWriter(ABC):
         self.output_dir = Path(char_mos.output_dir)
         self.output_dir.mkdir(exist_ok=True)
         self.char_mos = char_mos
+    def get_tag(self,*args):
+        return '_'.join([f'{i:.2f}'.replace('.','p') for i in args])
     @abstractmethod
     def genNetlist(self, L, VSB):
         pass
@@ -254,8 +392,8 @@ class NgspiceNetlistWriter(NetlistWriter):
     def __init__(self, char_mos):
         super().__init__(char_mos)
     def genNetlist(self, L, VSB):
-        netlist_path = self.output_dir/f'charMOS_{L}_{VSB}.net'
-        raw_path = self.output_dir/f"out_{L}_{VSB}.raw"
+        netlist_path = self.output_dir/f'charMOS_{self.get_tag(L,VSB)}.net'
+        raw_path = self.output_dir/f"out_{self.get_tag(L,VSB)}.raw"
         raw_file = raw_path.name
         with netlist_path.open("w") as netlist:
             netlist.write("Characterize MOSFETs\n")

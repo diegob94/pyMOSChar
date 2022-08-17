@@ -8,6 +8,9 @@ numpy = "*"
 tqdm = "*"
 dataclasses-json = "*"
 marshmallow-numpy = "*"
+jupyterlab = "*"
+scipy = "*"
+matplotlib = "*"
 
 [dev-packages]
 

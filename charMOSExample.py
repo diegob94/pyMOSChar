@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 import sys
 
-from charMOS import CharMOS
+from pyMOSChar import CharMOS
+
 import numpy as np
 
 # Specify the name of the MOSFET model. Simple way to do so
@@ -37,8 +38,8 @@ vsbMax = 1
 vsbStep = 20e-3
 
 ## test
-mosLengths = np.linspace(0.15, 100, 2)
-vsbN = 2
+mosLengths = np.linspace(0.15, 100, 10)
+vsbN = 10
 vsbMax = 1
 vsbStep = vsbMax/(vsbN-1)
 
