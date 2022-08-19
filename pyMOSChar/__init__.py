@@ -9,8 +9,7 @@ from pathlib import Path
 import subprocess as sp
 import shlex
 import gzip
-from multiprocessing.pool import ThreadPool
-import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses_json import DataClassJsonMixin
 from typing import List, Dict, Any
 from dataclasses import dataclass, field, asdict
@@ -211,9 +210,7 @@ class CharMOS:
 
         for modelFile in modelFiles:
             if (not os.path.isfile(modelFile)):
-                print("Model file {0} not found!".format(modelFile))
-                print("Please call init() again with a valid model file")
-                return None
+                raise FileNotFoundError("Model file {0} not found! Please call init() again with a valid model file".format(modelFile))
 
         vgs = np.linspace(0, vgsMax, int(vgsMax/vgsStep + 1))
         vds = np.linspace(0, vdsMax, int(vdsMax/vdsStep + 1))
@@ -319,13 +316,20 @@ class CharMOS:
         print(f"Executing {len(jobs)} simulation jobs with {self.max_cores} parallel cores")
 
         # Execute simulations
-        with ThreadPool(self.max_cores) as pool:
-            self.pbar = tqdm.tqdm(total=len(jobs))
-            pool.map(lambda x: x(), jobs)
-            self.pbar.close()
+        results = []
+        with ThreadPoolExecutor(max_workers = self.max_cores) as executor:
+            futures = [executor.submit(lambda x: x(), job) for job in jobs]
+            for counter,future in enumerate(as_completed(futures)):
+                try:
+                    results.append(future.result())
+                except Exception as e:
+                    for f in futures:
+                        f.cancel()
+                    raise e from None
+                print(f"Progress {counter/len(jobs):.2f}%")
 
         # Collect result data
-        for job in jobs:
+        for job in results:
             self.netlist_writer.read_data(job.results["raw"],idxL=job.params['idxL'],idxVSB=job.params['idxVSB'])
 
         print()
@@ -336,31 +340,31 @@ class CharMOS:
         return self.mosDat
 
     def run_job(self,idxL,idxVSB):
-        def custom_print(*args,**kwargs):
-            self.pbar.write(*args,**kwargs)
-            self.mutex.release()
         self.mutex.acquire()
-        self.pbar.write("Info: Simulating for L={0}, VSB={1}".format(self.mosLengths[idxL], self.vsb[idxVSB]))
+        print("Simulating for L={0}, VSB={1}".format(self.mosLengths[idxL], self.vsb[idxVSB]))
         log_file = self.output_dir/f"{self.simulator}_{idxL}_{idxVSB}.log"
         netlists = self.netlist_writer.genNetlist(self.mosLengths[idxL], self.vsb[idxVSB])
         cmd = [self.simulator] + self.simOptions + [netlists["mos"].name]
         if self.run_simulations:
-            run_command(cmd,netlists["mos"].parent,log_file,_print=custom_print)
+            run_command(cmd,netlists["mos"].parent,log_file,
+                before_run=lambda: self.mutex.release(),
+                after_run=lambda: print(f"Simulating for L={self.mosLengths[idxL]}, VSB={self.vsb[idxVSB]} done"))
         else:
             self.mutex.release()
-        self.pbar.update()
         return dict(raw=netlists['mos_raw'],log=log_file)
 
-def run_command(cmd, cwd=Path.cwd(), log_file=None, _print=print):
+def run_command(cmd, cwd=Path.cwd(), log_file=None, before_run=lambda: None, after_run=lambda: None):
     run_args = {}
     if isinstance(cmd,str):
         cmd = shlex.split(cmd)
     if log_file is not None:
         log_file = Path(log_file)
-        _print(f"subprocess.run> {shlex.join(cmd)} (cwd={cwd}, log_file={log_file})")
+        print(f"subprocess.run> {shlex.join(cmd)} (cwd={cwd}, log_file={log_file})")
         log = log_file.open('w')
         run_args = dict(stdout=log, stderr=log)
+    before_run()
     r = sp.run(cmd, cwd=cwd, check=True, **run_args)
+    after_run()
     if log_file is not None:
         log.close()
     return r
@@ -455,7 +459,7 @@ class NgspiceNetlistWriter(NetlistWriter):
                 netlist.write("\n")
             save_vars = ['id', 'vt', 'gm', 'gmb', 'gds', 'cgg', 'cgs', 'cgd', 'cgb', 'cdd', 'css']
             netlist.write(f"write {raw_file} {' '.join([i + '_' + s for i in save_vars for s in ['n','p']])}\n")
-            netlist.write("exit\n")
+            netlist.write('quit\n')
             netlist.write(".endc\n")
             netlist.write(".end\n")
         return dict(mos=netlist_path, mos_raw=raw_path)
