@@ -316,20 +316,19 @@ class CharMOS:
         print(f"Executing {len(jobs)} simulation jobs with {self.max_cores} parallel cores")
 
         # Execute simulations
-        results = []
         with ThreadPoolExecutor(max_workers = self.max_cores) as executor:
             futures = [executor.submit(lambda x: x(), job) for job in jobs]
             for counter,future in enumerate(as_completed(futures)):
                 try:
-                    results.append(future.result())
+                    future.result()
                 except Exception as e:
                     for f in futures:
                         f.cancel()
                     raise e from None
-                print(f"Progress {counter/len(jobs):.2f}%")
+                print(f"Progress {100*(counter+1)/len(jobs):.2f}%")
 
         # Collect result data
-        for job in results:
+        for job in jobs:
             self.netlist_writer.read_data(job.results["raw"],idxL=job.params['idxL'],idxVSB=job.params['idxVSB'])
 
         print()
