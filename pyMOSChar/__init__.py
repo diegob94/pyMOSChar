@@ -19,8 +19,14 @@ from scipy.interpolate import interpn
 import pyMOSChar.spice3read as spice3read
 from pyMOSChar.numpy_json import NumpyField
 
+class DataClassDictMixin:
+    def keys(self):
+        return self.__dataclass_fields__.keys()
+    def __getitem__(self, key):
+        return getattr(self,key)
+
 @dataclass
-class FetData(DataClassJsonMixin):
+class FetData(DataClassJsonMixin, DataClassDictMixin):
     corners: List[str]
     temp: float
     width: float
@@ -42,11 +48,9 @@ class FetData(DataClassJsonMixin):
     vgs: np.ndarray = NumpyField()
     vds: np.ndarray = NumpyField()
     vsb: np.ndarray = NumpyField()
-    def __getitem__(self, key):
-        return getattr(self,key)
 
 @dataclass
-class MosData(DataClassJsonMixin):
+class MosData(DataClassJsonMixin, DataClassDictMixin):
     pfet: FetData
     nfet: FetData
     modelFiles: List[str]
@@ -56,8 +60,6 @@ class MosData(DataClassJsonMixin):
     def read_db(db_path):
         db_path = Path(db_path)
         return MosData.schema().loads(gzip.decompress(db_path.read_bytes()))
-    def __getitem__(self, key):
-        return getattr(self,key)
     def lookup(self, mosType, *outVars, **inVars):
 
         # Check if a valid MOSFET type is specified.
